@@ -5,57 +5,42 @@ from typing import List
 import config as C
 from shape import Shape
 
-
 class Population:
     """Container around a list[Shape] with convenience helpers."""
 
-    # ──────────────────────────────
-    # Construction
-    # ──────────────────────────────
     def __init__(self, size: int):
         self.shapes: List[Shape] = [Shape() for _ in range(size)]
         self.generation = 1 
 
-    # ──────────────────────────────
-    # Core GA helpers
-    # ──────────────────────────────
     def evaluate(self) -> None:
         """Compute t_spin for every Shape."""
         for s in self.shapes:
             s.calc_spin_time()
-
+    
     def normalise(self) -> None:
-        """Normalise aerodynamic + human metrics to [0,1]."""
+        self.apply_human_decay()
+
         t_vec = np.array([s.t_spin for s in self.shapes])
         t_min, t_max = t_vec.min(), t_vec.max()
 
-        # normalise each shape in-place then recompute fitness
         for s in self.shapes:
-            s.normalize(t_min, t_max)
-            s.calc_fitness()
+            s.normalize(t_min, t_max)      # updates t_norm & h_norm
+            s.calc_fitness()               # combines with (possibly-decayed) h_score
 
     def rank(self) -> np.ndarray:
-        """Return indices sorted by descending fitness."""
         fit = np.array([s.fitness for s in self.shapes])
         return np.argsort(fit)[::-1]
 
-    # ──────────────────────────────
-    # Stats & convenience
-    # ──────────────────────────────
     def best(self, n: int = 1) -> List[Shape]:
-        """Return the top-n shapes (deep copies)."""
         idx = self.rank()[:n]
         return [self.shapes[i].clone() for i in idx]
 
     def diversity(self) -> float:
-        """Mean pairwise Euclidean distance between radii vectors."""
         R = np.stack([s.radii for s in self.shapes])
         dists = np.sqrt(((R[:, None, :] - R[None, :, :]) ** 2).sum(-1))
-        # exclude diagonal zeros
         return dists[np.triu_indices_from(dists, k=1)].mean()
 
     def to_dataframe(self, gen: int) -> pd.DataFrame:
-        """Dump current population to a DataFrame for logging."""
         records = []
         for i, s in enumerate(self.shapes):
             rec = {'gen': gen, 'id': i}
@@ -63,27 +48,49 @@ class Population:
             records.append(rec)
         return pd.DataFrame(records)
 
-    # ──────────────────────────────
-    # GA transitions
-    # ──────────────────────────────
+    def apply_human_decay(self) -> None:
+        """Decay stored human ratings so old opinions fade out."""
+        for s in self.shapes:
+            if s.h_score is not None:
+                s.h_score *= C.H_DECAY
+                # clamp into [1,10] if you want an explicit floor
+                if s.h_score < 1:
+                    s.h_score = None  # treat as unrated after fading out
+
+ 
+
+
     def next_generation(self, elite_idx: np.ndarray) -> None:
         """
-        Build the next generation in-place:
-        • Keep N_EK elites unchanged
-        • Fill the remainder by mutating random parents from elite set
+        Elites kept, random immigrants added, rest via crossover+mutation.
+        Human score handling:
+          – mutation-only child: copies *decayed* parent score
+          – crossover child   : average of decayed parent scores (or None)
         """
-        # 1. Copy spared elites
-        new_shapes: List[Shape] = [
-            self.shapes[i].clone() for i in elite_idx[:C.N_EK]
-        ]
+        new_shapes: List[Shape] = []
 
-        # 2. Produce children until population is full
+        # 1) Exact elites
+        for i in elite_idx[:C.N_EK]:
+            new_shapes.append(self.shapes[i].clone())
+
+        # 2) Immigrants (no human score)
+        for _ in range(C.N_IMMIGRANTS):
+            new_shapes.append(Shape())
+
+        # 3) Offspring
         while len(new_shapes) < C.N:
-            parent = self.shapes[np.random.choice(elite_idx)]
-            child = parent.clone()
+            p1_id, p2_id = np.random.choice(elite_idx[:C.N_E], 2, replace=False)
+            p1, p2 = self.shapes[p1_id], self.shapes[p2_id]
+
+            child = Shape.crossover(p1, p2)
             child.mutate()
-            # reset any human score carried over
-            child.h_score = None
+            # propagate already-decayed scores
+            if p1_id == p2_id:
+                child.h_score = p1.h_score
+            else:
+                scores = [sc for sc in (p1.h_score, p2.h_score) if sc is not None]
+                child.h_score = None if not scores else sum(scores)/len(scores)
+
             new_shapes.append(child)
 
-        self.shapes = new_shapes
+        self.shapes = new_shapes[:C.N]

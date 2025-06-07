@@ -11,26 +11,19 @@ class Shape:
     
     @staticmethod
     def random_radii():
-        """Return an array of K random radii in [B_MIN, B_MAX]."""
         return np.random.uniform(C.B_MIN, C.B_MAX, C.K)
     def calc_spin_time(self):
-        """Calculate the spin time based on the current radii.
-        t_spin ≈ [2·ρ_mat·h·Σ(r_i^4)] / [ρ_air·C_d·R^4·ω0]
+        """Scale-neutral aerodynamic score:
+        t_spin = Σ r_i^4 / (R^4 + EPS)   (no mass term)"""
         R = np.max(self.radii)
-        numerator   = 2 * C.RHO_MAT * C.H * np.sum(self.radii**4)
-        denominator = C.RHO_AIR * C.C_D * (R**4) * C.OMEGA0 + C.EPS
-        self.t_spin = numerator / denominator
-                """
-                
-        R = np.max(self.radii)
-        shape_eff = np.sum(self.radii ** 4) / ((R ** 4) * len(self.radii) + C.EPS)
-        self.t_spin = shape_eff          # store as fitness metric
+        self.t_spin = np.sum(self.radii ** 4) / (R ** 4 + C.EPS)
     
     def normalize(self, t_min, t_max):
         """
         Normalize t_spin → t_norm in [0,1] using given min/max,
         and human score → h_norm in [0,1].
         """
+
         self.t_norm = (self.t_spin - t_min) / (t_max - t_min + C.EPS)
         if self.h_score is None:
             self.h_norm = 0.0
@@ -57,6 +50,24 @@ class Shape:
         copy.h_norm  = self.h_norm
         copy.fitness = self.fitness
         return copy
+    
+    @staticmethod
+    def crossover(p1: "Shape", p2: "Shape") -> "Shape":
+        """
+        BLX-α crossover: mix two parent shapes into a new child.
+        """
+        alpha = C.BLX_ALPHA
+        child_r = np.empty_like(p1.radii)
+        for i, (r1, r2) in enumerate(zip(p1.radii, p2.radii)):
+            lo, hi = min(r1, r2), max(r1, r2)
+            I = hi - lo
+            child_r[i] = np.clip(
+                np.random.uniform(lo - alpha * I, hi + alpha * I),
+                C.B_MIN, C.B_MAX
+            )
+        return Shape(child_r)
+    
+    
     def to_dict(self):
         """
         Pack metrics and radii into a flat dict for logging:
@@ -74,9 +85,8 @@ class Shape:
         return data
 
     def __repr__(self):
-        """Compact display of key metrics for debugging."""
-        return (f"<Shape fitness={self.fitness:.3f} "
-                f"t_spin={self.t_spin:.3f} h_score={self.h_score}>")
+        fit = "NA" if self.fitness is None else f"{self.fitness:.3f}"
+        return f"<Shape fit={fit} t={self.t_spin:.3f}>"
 
 
 

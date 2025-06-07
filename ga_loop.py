@@ -1,48 +1,56 @@
+
 import time
-import numpy as np
-import pandas as pd
 from pathlib import Path
-from log import ExperimentLogger
+import numpy as np
 
 import config as C
 from population import Population
-import hitl
+from log import ExperimentLogger
+import hitl_pygame as hitl   # swap to ascii hitl if needed
 
 
-# ──────────────────────────────────────────────────────────────────
-def run_experiment(exp_id: str, k_eval: int) -> None:
-    np.random.seed(C.SEED)
-    pop = Population(C.N)                # initial population
-    rows = []                            # logging list
-    logger = ExperimentLogger()
+# ────────────────────────────────────────────────────────────────────
+def run_experiment(exp_id: str, k_eval: int, seed: int) -> None:
+    np.random.seed(seed)
+
+    pop = Population(C.N)
+    logger = ExperimentLogger(exp_id=exp_id, seed=seed, k_eval=k_eval)
 
     for gen in range(1, C.G + 1):
         pop.generation = gen
-        # 1) Evaluate physics metric
+
+        # 1) physics evaluation
         pop.evaluate()
 
-        # 2) Possibly collect human ratings
-        if k_eval and gen % k_eval == 0:
-            elite_idx = pop.rank()[: C.N_E]
-            new_scores = hitl.ask_scores(elite_idx, pop)
-            for idx, score in new_scores.items():
-                pop.shapes[idx].h_score = score
-
-        # 3) Normalise and calc fitness for everyone
+        # 2) first normalisation → every shape gets fitness
         pop.normalise()
 
-        # 4) Log population snapshot
-        df_gen = pop.to_dataframe(gen)
-        df_gen["diversity"] = pop.diversity()
-        logger.add_dataframe(df_gen)
+        # 3) optional HITL every k_eval generations
+        if k_eval and gen % k_eval == 0:
+            elite_ids = pop.rank()[: C.N_E // 2]
 
+            # sample same number of random non-elite candidates
+            pool = np.setdiff1d(np.arange(C.N), elite_ids, assume_unique=True)
+            rand_ids = np.random.choice(pool, size=len(elite_ids), replace=False)
+            candidate_ids = np.concatenate([elite_ids, rand_ids])
 
-        # 5) Selection + reproduction
+            new_scores = hitl.ask_scores_pygame(candidate_ids, pop)
+            for idx, sc in new_scores.items():
+                shp = pop.shapes[idx]
+                shp.h_score = sc
+                # update only that individual's norms & fitness
+                shp.h_norm = (sc - 1) / 9.0
+                shp.calc_fitness()
+
+        # 4) log current generation
+        logger.add_population(gen, pop)
+
+        # 5) build next generation
         ranked = pop.rank()
         pop.next_generation(ranked[: C.N_E])
 
+    # ─── after evolution ───────────────────────────────────────────
+    logger.to_csv(Path("logs"))
+    print(f"[{exp_id}] done – log saved.")
 
-        out_dir = Path("logs")
-        fname   = f"{exp_id}_k{k_eval}_{int(time.time())}.csv"
-        logger.to_csv(out_dir / fname)
-    print("factum est")
+
