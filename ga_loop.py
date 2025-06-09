@@ -27,7 +27,7 @@ def run_experiment(exp_id: str, k_eval: int, seed: int) -> None:
         pop.normalise()
 
         # 3) optional HITL every k_eval generations
-        if k_eval and gen % k_eval == 0:
+        if k_eval and (gen == 4 or gen % k_eval == 0):
             elite_ids = pop.rank()[: C.N_E // 2]
 
             # sample same number of random non-elite candidates

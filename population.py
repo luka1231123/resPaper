@@ -6,17 +6,16 @@ import config as C
 from shape import Shape
 
 class Population:
-    """Container around a list[Shape] with convenience helpers."""
 
     def __init__(self, size: int):
         self.shapes: List[Shape] = [Shape() for _ in range(size)]
-        self.generation = 1 
+        self.generation = 1
 
     def evaluate(self) -> None:
         """Compute t_spin for every Shape."""
         for s in self.shapes:
             s.calc_spin_time()
-    
+
     def normalise(self) -> None:
         self.apply_human_decay()
 
@@ -25,7 +24,7 @@ class Population:
 
         for s in self.shapes:
             s.normalize(t_min, t_max)      # updates t_norm & h_norm
-            s.calc_fitness()               # combines with (possibly-decayed) h_score
+            s.calc_fitness()               # combines with physics + human
 
     def rank(self) -> np.ndarray:
         fit = np.array([s.fitness for s in self.shapes])
@@ -48,48 +47,60 @@ class Population:
             records.append(rec)
         return pd.DataFrame(records)
 
+    def _mean_anchor(self, fallback: float = 5.0) -> float:
+        """Mean of all non-None anchor scores (raw 1-10)."""
+        vals = [s.h_anchor for s in self.shapes if s.h_anchor is not None]
+        return float(np.mean(vals)) if vals else fallback
+
     def apply_human_decay(self) -> None:
-        """Decay stored human ratings so old opinions fade out."""
+        """Decay stored human anchor ratings so old opinions fade out."""
         for s in self.shapes:
-            if s.h_score is not None:
-                s.h_score *= C.H_DECAY
-                # clamp into [1,10] if you want an explicit floor
-                if s.h_score < 1:
-                    s.h_score = None  # treat as unrated after fading out
+            if s.h_anchor is not None:
+                s.h_anchor *= C.H_DECAY
+                if s.h_anchor < 1.0:
+                    s.h_anchor = None
+        self._fill_missing_anchors()
 
- 
-
+    def _fill_missing_anchors(self) -> None:
+        """Ensure every shape has at least the population mean anchor."""
+        mean = self._mean_anchor()
+        for s in self.shapes:
+            if s.h_anchor is None:
+                s.h_anchor = mean
+                s.anchor_r = s.radii.copy()
+                s.update_guard()
 
     def next_generation(self, elite_idx: np.ndarray) -> None:
-        """
-        Elites kept, random immigrants added, rest via crossover+mutation.
-        Human score handling:
-          – mutation-only child: copies *decayed* parent score
-          – crossover child   : average of decayed parent scores (or None)
-        """
         new_shapes: List[Shape] = []
 
         # 1) Exact elites
         for i in elite_idx[:C.N_EK]:
             new_shapes.append(self.shapes[i].clone())
 
-        # 2) Immigrants (no human score)
+        # 2) Immigrants seeded with population mean anchor
+        mean_anchor = self._mean_anchor()
         for _ in range(C.N_IMMIGRANTS):
-            new_shapes.append(Shape())
+            sh = Shape()
+            sh.h_anchor = mean_anchor
+            sh.anchor_r = sh.radii.copy()
+            sh.update_guard()
+            new_shapes.append(sh)
 
-        # 3) Offspring
+        # 3) Offspring via crossover+mutation, always inheriting anchor
         while len(new_shapes) < C.N:
-            p1_id, p2_id = np.random.choice(elite_idx[:C.N_E], 2, replace=False)
+            p1_id, p2_id = np.random.choice(elite_idx[:C.N_E], 2, replace=True)
             p1, p2 = self.shapes[p1_id], self.shapes[p2_id]
 
+            sigma_now = max(C.SIGMA_MIN, C.SIGMA * (C.SIGMA_DECAY ** self.generation))
             child = Shape.crossover(p1, p2)
-            child.mutate()
-            # propagate already-decayed scores
-            if p1_id == p2_id:
-                child.h_score = p1.h_score
-            else:
-                scores = [sc for sc in (p1.h_score, p2.h_score) if sc is not None]
-                child.h_score = None if not scores else sum(scores)/len(scores)
+            child.mutate(sigma_now)
+
+            # inherit decayed anchor from the higher-rated parent
+            pa = p1 if (p1.h_anchor or 0) >= (p2.h_anchor or 0) else p2
+            inherited = (pa.h_anchor or mean_anchor)
+            child.h_anchor = inherited * C.H_DECAY
+            child.anchor_r = pa.anchor_r.copy() if pa.anchor_r is not None else pa.radii.copy()
+            child.update_guard()
 
             new_shapes.append(child)
 
