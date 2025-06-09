@@ -12,12 +12,32 @@ class Shape:
     @staticmethod
     def random_radii():
         return np.random.uniform(C.B_MIN, C.B_MAX, C.K)
+
     def calc_spin_time(self):
-        """Scale-neutral aerodynamic score:
-        t_spin = Σ r_i^4 / (R^4 + EPS)   (no mass term)"""
-        R = np.max(self.radii)
-        self.t_spin = np.sum(self.radii ** 4) / (R ** 4 + C.EPS)
-    
+        """
+        Analytic proxy for ‘pressure + form’ drag vs. inertia.
+        • Inertia  ~ Σ r⁴
+        • Drag     ~  A_front / slopeBoost · smoothPenalty
+            A_front        = π·R²        (frontal area)
+            slopeBoost     = ⟨|Δr|⟩ + δ  (reward gradual taper; cylinder → 0)
+            smoothPenalty  = 1 + κ·⟨|Δ²r|⟩  (punish wavy / spiky shapes)
+        The score grows when the body is *large enough to carry
+        inertia*, *tapers smoothly*, and *avoids abrupt steps*.
+        """
+        r = self.radii
+        R = r.max()
+        inertia = (r**4).sum()                    # Σ r⁴
+
+        slope     = np.abs(np.diff(r)).mean()       # first derivative
+        curvature = np.abs(np.diff(r, n=2)).mean()  # second derivative
+
+        κ = 50.0      # how hard to punish wiggles – tune if needed
+
+        slope_boost   = slope + C.EPS                # ↑ with taper
+        smooth_penalty = 1.0 + κ*curvature        # ↓ if wavy
+
+        drag_proxy = (R**2) / slope_boost * smooth_penalty
+        self.t_spin = inertia / (drag_proxy + C.EPS)
     def normalize(self, t_min, t_max):
         """
         Normalize t_spin → t_norm in [0,1] using given min/max,

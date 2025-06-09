@@ -3,6 +3,7 @@ import time
 from pathlib import Path
 import numpy as np
 
+from gen_stl import radii_to_stl
 import config as C
 from population import Population
 from log import ExperimentLogger
@@ -47,10 +48,15 @@ def run_experiment(exp_id: str, k_eval: int, seed: int) -> None:
 
         # 5) build next generation
         ranked = pop.rank()
-        pop.next_generation(ranked[: C.N_E])
+        if gen < C.G:                      # ← guard for last gen
+            pop.next_generation(ranked[:C.N_E])
+
 
     # ─── after evolution ───────────────────────────────────────────
+    best_shape = pop.best(1)[0]
+    stl_path, _ = radii_to_stl(best_shape.radii, dz=C.H, res=6, stl_path='best_shape.stl')
     logger.to_csv(Path("logs"))
     print(f"[{exp_id}] done – log saved.")
+    
 
 
