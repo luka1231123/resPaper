@@ -10,8 +10,7 @@ UPGRADE v3
 
 Key bindings
 ------------
-    1-9,0   rate candidate 1-10  (0 == 10)
-    ← / →   browse candidates   (A / D also)
+    ← / →   select better candidates   (A / D also)
     ENTER   finish & save ratings (only when all rated)
     ESC     abort without saving
 """
@@ -26,7 +25,7 @@ from shape import Shape
 # --------------------------------------------------------------------------- #
 # Window / colour constants
 # --------------------------------------------------------------------------- #
-WIDTH, HEIGHT = 900, 640
+WIDTH, HEIGHT = 1500, 640
 MARGIN_TOP = 40
 BG_COLOR = (30, 30, 30)
 FG_COLOR = (230, 230, 230)
@@ -34,10 +33,18 @@ DISC_COLOR = (90, 180, 250)
 FONT_NAME = "consolas"
 FPS = 60
 
+375
+
+
 # Drawing layout --------------------------------------------------------------
-CX_3D = WIDTH // 3              # x-centre of 3-D view
-CX_2D = 2 * WIDTH // 3 + 20     # x-origin of 2-D outline
+CX_3D = WIDTH / 4         # x-centre of 3-D view
+CX_2D = WIDTH / 4    # x-origin of 2-D outline
 SLICE_PIX = 6                   # vertical px per slice for both views
+
+CX_3D_2 = WIDTH / 4 *3
+CX_2D_2 =  WIDTH /4 *3
+SLICE_PIX = 6
+
 
 # --------------------------------------------------------------------------- #
 # Helpers
@@ -95,16 +102,18 @@ def render_text(surface, font, txt: str, x: int, y: int, color=FG_COLOR):
 # --------------------------------------------------------------------------- #
 
 def ask_scores_pygame(candidate_ids: List[int], population) -> Dict[int, int]:
-    """Show interactive rating UI and return dict {candidate_id: score}."""
     pygame.init()
     screen = pygame.display.set_mode((WIDTH, HEIGHT))
-    pygame.display.set_caption("Rate Shapes | ←/→ browse | ENTER finish")
+    pygame.display.set_caption("Rate Shapes | ←/→ which is better")
     clock = pygame.time.Clock()
     font = pygame.font.SysFont(FONT_NAME, 20)
 
     scores: Dict[int, int] = {cid: None for cid in candidate_ids}
     idx = 0
     running = True
+    left_pressed=False
+    counter=1
+
 
     while running:
         for event in pygame.event.get():
@@ -116,10 +125,19 @@ def ask_scores_pygame(candidate_ids: List[int], population) -> Dict[int, int]:
                     pygame.quit()
                     return {}
                 if event.key in (pygame.K_RIGHT, pygame.K_d):
-                    idx = (idx + 1) % len(candidate_ids)
+                    counter=counter+1
+                    idx = (idx + 1) % len(candidate_ids) # it means right is better
                 if event.key in (pygame.K_LEFT, pygame.K_a):
-                    idx = (idx - 1) % len(candidate_ids)
-                if pygame.K_1 <= event.key <= pygame.K_9 or event.key == pygame.K_0:
+                    counter=counter+1
+                    placeholder=candidate_ids[idx]
+                    candidate_ids[idx]=candidate_ids[idx+1]
+                    candidate_ids[idx+1]=placeholder
+                    idx = (idx + 1) % len(candidate_ids) # it means right is better
+                    left_pressed=True
+                    #print(counter)
+                    #idx = (idx - 1) % len(candidate_ids) it means left is better
+
+                """if pygame.K_1 <= event.key <= pygame.K_9 or event.key == pygame.K_0:
                     # record rating and update anchor/guard
                     rating = (event.key - pygame.K_0) if event.key != pygame.K_0 else 10
                     cid = candidate_ids[idx]
@@ -128,6 +146,27 @@ def ask_scores_pygame(candidate_ids: List[int], population) -> Dict[int, int]:
                     sh.h_anchor = float(rating)
                     sh.anchor_r = sh.radii.copy()
                     sh.update_guard()
+                """
+                if counter==10 and not left_pressed:
+                    rating=0
+                    for idz in candidate_ids:
+                        rating=rating+1
+                        print(rating)
+                    
+                        cid=candidate_ids[rating-1]
+                        scores[cid]=rating
+                        sh = population.shapes[cid]
+                        sh.h_anchor = float(rating)
+                        sh.anchor_r = sh.radii.copy()
+                        sh.update_guard()
+                    counter=1
+                    idx=0
+                    running=False
+                elif counter==10:
+                    left_pressed=False
+                    counter=1
+                    idx=0
+                    
                 if event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
                     if all(v is not None for v in scores.values()):
                         running = False
@@ -136,14 +175,19 @@ def ask_scores_pygame(candidate_ids: List[int], population) -> Dict[int, int]:
         shape = population.shapes[candidate_ids[idx]]
         cy = HEIGHT // 2 + 40
         draw_shape_3d(screen, shape, CX_3D, cy)
-        draw_cross_section(screen, shape, CX_2D, cy)
+        draw_cross_section(screen, shape, CX_2D, cy-200)
+
+        #comparision
+        shape2 = population.shapes[candidate_ids[idx+1]]
+        draw_shape_3d(screen, shape2, CX_3D_2, cy)
+        draw_cross_section(screen, shape2, CX_2D_2, cy-200)
 
         render_text(screen, font, f"Generation: {getattr(population, 'generation', '?')}", 20, 10)
-        render_text(screen, font, f"Candidate {idx+1}/{len(candidate_ids)}  |  slices {len(shape.radii)}", 20, 35)
+        render_text(screen, font, f"Candidate {idx+1}/{len(candidate_ids)}  VS  Candidate {idx+2}/{len(candidate_ids)}", 20, 35)
         render_text(screen, font, f"Spin score: {shape.t_spin:.4f}", 20, 60)
         rating = scores[candidate_ids[idx]]
-        render_text(screen, font, f"Rating: {rating if rating is not None else '—'} (1-10)", 20, 85)
-        render_text(screen, font, "Keys 1-9,0=rate  ←/→ browse  ENTER=done", 20, HEIGHT - 30)
+        #render_text(screen, font, f"Rating: {rating if rating is not None else '—'} (1-10)", 20, 85)
+        render_text(screen, font, "Rate Shapes | ←/→ which is better", 20, HEIGHT - 30)
 
         pygame.display.flip()
         clock.tick(FPS)
