@@ -14,7 +14,7 @@ Pi       = 3.14159265358979323846  # pi constant
 # Algorithm Parameters
 # ===========================
 K         = 15        # number of slices
-B_MIN     = 0.15       # min radius (m)
+B_MIN     = 0.01       # min radius (m)
 B_MAX     = 0.3       # max radius (m)
 
 N         = 100        # population size

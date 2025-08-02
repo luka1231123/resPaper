@@ -1,196 +1,141 @@
+"""Rank axisymmetric shapes (adaptive merge-sort GUI).
+
+← / A  pick left   → / D  pick right   Esc abort
 """
-Graphical HITL rating tool (Pygame version).
-
-UPGRADE v3
-=========
-* Splits human rating into an **anchor** and **guard** score per shape.
-  - `h_anchor`: decaying raw rating (1–10)
-  - `h_guard`: proximity bonus recalculated each rating
-* On each rating key, updates both fields and calls `update_guard()`.
-
-Key bindings
-------------
-    ← / →   select better candidates   (A / D also)
-    ENTER   finish & save ratings (only when all rated)
-    ESC     abort without saving
-"""
-
-import math
-from typing import Dict, List
-import colorsys
-import pygame
-import config as C
+from __future__ import annotations
+import math, colorsys, numpy as np, pygame
+import pygame.gfxdraw as gfx
+from typing import List, Dict
 from shape import Shape
 
-# --------------------------------------------------------------------------- #
-# Window / colour constants
-# --------------------------------------------------------------------------- #
-WIDTH, HEIGHT = 1500, 640
-MARGIN_TOP = 40
-BG_COLOR = (30, 30, 30)
-FG_COLOR = (230, 230, 230)
-DISC_COLOR = (90, 180, 250)
-FONT_NAME = "consolas"
-FPS = 60
+# ── config ────────────────────────────────────────────────────────────
+W, H          = 1500, 640
+BG, FG        = (30, 30, 30), (230, 230, 230)
+FONT_NAME     = "consolas"
+FPS, SLICE    = 60, 6
+STRETCH       = 2.5
+CX_L, CX_R    = W // 4, 3 * W // 4
+LIGHT         = tuple(c / math.hypot(-0.6, -0.8) for c in (-0.6, -0.8))
 
-375
-
-
-# Drawing layout --------------------------------------------------------------
-CX_3D = WIDTH / 4         # x-centre of 3-D view
-CX_2D = WIDTH / 4    # x-origin of 2-D outline
-SLICE_PIX = 6                   # vertical px per slice for both views
-
-CX_3D_2 = WIDTH / 4 *3
-CX_2D_2 =  WIDTH /4 *3
-SLICE_PIX = 6
+# ── helpers ───────────────────────────────────────────────────────────
+def scale(rad, mx: int = 300) -> list[int]:
+    """Return radii scaled so the largest fits into *mx* pixels."""
+    rad = np.asarray(rad, dtype=float)        # works for list/tuple too
+    if rad.size == 0:                         # empty → nothing to draw
+        return []
+    k = mx / rad.max()                        # avoid /0: rad.max() ≥ 0 here
+    return (rad * k).astype(int).tolist()
 
 
-# --------------------------------------------------------------------------- #
-# Helpers
-# --------------------------------------------------------------------------- #
-
-def scale_radii(radii: List[float], max_px: int = 300) -> List[int]:
-    """Scale radii so the largest becomes *max_px* pixels."""
-    r_max = max(radii) or 1e-6
-    scale = max_px / r_max
-    return [int(r * scale) for r in radii]
-
-
-def slice_color(i: int, n: int) -> tuple[int, int, int]:
-    """HSV → RGB colour ramp (blue→red)."""
-    hue = 220 / 360 * (1 - i / (n - 1))
-    r, g, b = colorsys.hsv_to_rgb(hue, 0.8, 0.95)
+def grad(i: int, n: int) -> tuple[int, int, int]:
+    hue = 220 / 360 * (1 - i / (n - 1 or 1))
+    r, g, b = colorsys.hsv_to_rgb(hue, .8, .95)
     return int(r * 255), int(g * 255), int(b * 255)
 
-# --------------------------------------------------------------------------- #
-# Drawing primitives
-# --------------------------------------------------------------------------- #
+# ── drawing ───────────────────────────────────────────────────────────
+def draw_3d(dst: pygame.Surface, shp: Shape, cx: int, cy: int) -> None:
+    radii = scale(shp.radii)
+    if not radii: return
+    n, h, r_max = len(radii), len(radii) * SLICE, max(radii)
+    cols = np.array([grad(i, n) for i in range(n)], float)
+    buf  = np.zeros((h, 2 * r_max + 1, 4), np.uint8)
+    Lx, Ly = LIGHT
 
-def draw_shape_3d(surface, shape: Shape, cx: int, cy: int):
-    """Render an axisymmetric body as a stack of coloured ellipses."""
-    scaled = scale_radii(shape.radii)
-    n = len(scaled)
-    y = cy - n * SLICE_PIX // 2
-    for i, r_px in enumerate(reversed(scaled)):
-        col = slice_color(i, n)
-        ellipse = pygame.Rect(0, 0, 2 * r_px, int(0.7 * r_px))
-        ellipse.center = (cx, y)
-        pygame.draw.ellipse(surface, col, ellipse)
-        y += SLICE_PIX
+    for y in range(h):
+        i0, t = divmod(y, SLICE); t /= SLICE
+        i0 = min(i0, n - 2)
+        r   = int((1 - t) * radii[i0] + t * radii[i0 + 1])
+        col = (1 - t) * cols[i0] + t * cols[i0 + 1]
+        if not r: continue
+        xs  = np.arange(-r, r + 1)
+        nx  = xs / r
+        nz  = np.sqrt(1 - nx ** 2)
+        lam = np.clip(-(nx * Lx + nz * Ly), 0, 1)
+        shade = (.25 + .75 * lam)[:, None]
+        rgb   = (col * shade).astype(np.uint8)
+        cov   = np.clip(r - np.abs(xs) + .5, 0, 1)
+        alpha = (cov * 255).astype(np.uint8)
+        rgb   = (rgb * cov[:, None]).astype(np.uint8)
+        x0    = r_max - r
+        buf[y, x0:x0 + 2 * r + 1, :3], buf[y, x0:x0 + 2 * r + 1, 3] = rgb, alpha
 
+    surf = pygame.image.frombuffer(buf.tobytes(), (2 * r_max + 1, h), "RGBA")
+    if STRETCH != 1:
+        surf = pygame.transform.smoothscale(surf, (surf.get_width(), int(h * STRETCH)))
+    dst.blit(surf, (cx - surf.get_width() // 2, cy - surf.get_height() // 2))
 
-def draw_cross_section(surface, shape: Shape, x0: int, y0: int):
-    """Draw the radius profile as a poly-line (cross-section view)."""
-    scaled = scale_radii(shape.radii, max_px=120)
-    n = len(scaled)
-    pts = []
-    y = y0 - n * SLICE_PIX // 2
-    for r_px in reversed(scaled):
-        pts.append((x0 + r_px, y))
-        y += SLICE_PIX
-    pygame.draw.line(surface, (100, 100, 100), (x0, y0 - n * SLICE_PIX // 2), (x0, y0 + n * SLICE_PIX // 2), 1)
-    if len(pts) > 1:
-        pygame.draw.lines(surface, (200, 240, 100), False, pts, 2)
+def draw_section(dst: pygame.Surface, shp: Shape, x: int, y: int) -> None:
+    radii = np.asarray(scale(shp.radii, 120))
+    if radii.size == 0: return
+    n, h, y_top = len(radii), len(radii) * SLICE, y - (len(radii) * SLICE) // 2
+    ys = np.arange(h)
+    idx = np.clip(ys // SLICE, 0, n - 2)
+    t   = (ys % SLICE) / SLICE
+    r_y = (1 - t) * radii[idx] + t * radii[idx + 1]
+    pts = [(x, y_top)] + [(x + int(r), y_top + i) for i, r in enumerate(r_y)] + [(x, y_top + h)]
+    pygame.draw.line(dst, (120, 120, 120), (x, y_top), (x, y_top + h), 1)
+    gfx.filled_polygon(dst, pts, (60, 200, 80, 150))
+    gfx.aapolygon(dst, pts, (200, 240, 100))
 
+def blit(dst, font, txt, x, y):
+    dst.blit(font.render(txt, True, FG), (x, y))
 
-def render_text(surface, font, txt: str, x: int, y: int, color=FG_COLOR):
-    surface.blit(font.render(txt, True, color), (x, y))
-
-# --------------------------------------------------------------------------- #
-# Main HITL function
-# --------------------------------------------------------------------------- #
-
-def ask_scores_pygame(candidate_ids: List[int], population) -> Dict[int, int]:
+# ── public API ────────────────────────────────────────────────────────
+def ask_scores_pygame(ids, pop):
+    ids = list(ids)
+    if not ids: return {}
     pygame.init()
-    screen = pygame.display.set_mode((WIDTH, HEIGHT))
-    pygame.display.set_caption("Rate Shapes | ←/→ which is better")
-    clock = pygame.time.Clock()
-    font = pygame.font.SysFont(FONT_NAME, 20)
+    try:
+        scr = pygame.display.set_mode((W, H))
+        pygame.display.set_caption("Rate shapes  |  ← / → choose")
+        clk  = pygame.time.Clock()
+        font = pygame.font.SysFont(FONT_NAME, 20)
 
-    scores: Dict[int, int] = {cid: None for cid in candidate_ids}
-    idx = 0
-    running = True
-    left_pressed=False
-    counter=1
+        def choose(a, b, done, total):
+            while True:
+                for e in pygame.event.get():
+                    if e.type == pygame.QUIT: return None
+                    if e.type == pygame.KEYDOWN:
+                        if e.key == pygame.K_ESCAPE:           return None
+                        if e.key in (pygame.K_LEFT, pygame.K_a): return a
+                        if e.key in (pygame.K_RIGHT, pygame.K_d): return b
+                scr.fill(BG)
+                cy = H // 2 + 40
+                draw_3d(scr, pop.shapes[a], CX_L, cy)
+                draw_section(scr, pop.shapes[a], CX_L, cy - 200)
+                draw_3d(scr, pop.shapes[b], CX_R, cy)
+                draw_section(scr, pop.shapes[b], CX_R, cy - 200)
+                blit(scr, font, f"Generation: {getattr(pop, 'generation', '?')}", 20, 10)
+                blit(scr, font, f"Pair {done}/{total}", 20, 35)
+                blit(scr, font, "← / A : left    → / D : right", 20, H - 30)
+                pygame.display.flip(); clk.tick(FPS)
 
+        def merge(L, R, done, total):
+            out = []; i = j = 0
+            while i < len(L) and j < len(R):
+                pick = choose(L[i], R[j], len(done) + 1, total)
+                if pick is None: return None
+                out.append(pick); done.append(pick)
+                if pick == L[i]: i += 1
+                else:            j += 1
+            return out + L[i:] + R[j:]
 
-    while running:
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                pygame.quit()
-                return {}
-            if event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_ESCAPE:
-                    pygame.quit()
-                    return {}
-                if event.key in (pygame.K_RIGHT, pygame.K_d):
-                    counter=counter+1
-                    idx = (idx + 1) % len(candidate_ids) # it means right is better
-                if event.key in (pygame.K_LEFT, pygame.K_a):
-                    counter=counter+1
-                    placeholder=candidate_ids[idx]
-                    candidate_ids[idx]=candidate_ids[idx+1]
-                    candidate_ids[idx+1]=placeholder
-                    idx = (idx + 1) % len(candidate_ids) # it means right is better
-                    left_pressed=True
-                    #print(counter)
-                    #idx = (idx - 1) % len(candidate_ids) it means left is better
+        q     = [[i] for i in ids]
+        total = math.ceil(len(ids) * math.log2(max(len(ids), 1)))
+        prog  = []
+        while len(q) > 1:
+            nxt = []
+            for k in range(0, len(q), 2):
+                if k + 1 == len(q): nxt.append(q[k]); continue
+                m = merge(q[k], q[k + 1], prog, total)
+                if m is None: return {}
+                nxt.append(m)
+            q = nxt
 
-                """if pygame.K_1 <= event.key <= pygame.K_9 or event.key == pygame.K_0:
-                    # record rating and update anchor/guard
-                    rating = (event.key - pygame.K_0) if event.key != pygame.K_0 else 10
-                    cid = candidate_ids[idx]
-                    scores[cid] = rating
-                    sh = population.shapes[cid]
-                    sh.h_anchor = float(rating)
-                    sh.anchor_r = sh.radii.copy()
-                    sh.update_guard()
-                """
-                if counter==10 and not left_pressed:
-                    rating=0
-                    for idz in candidate_ids:
-                        rating=rating+1
-                        print(rating)
-                    
-                        cid=candidate_ids[rating-1]
-                        scores[cid]=rating
-                        sh = population.shapes[cid]
-                        sh.h_anchor = float(rating)
-                        sh.anchor_r = sh.radii.copy()
-                        sh.update_guard()
-                    counter=1
-                    idx=0
-                    running=False
-                elif counter==10:
-                    left_pressed=False
-                    counter=1
-                    idx=0
-                    
-                if event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
-                    if all(v is not None for v in scores.values()):
-                        running = False
-
-        screen.fill(BG_COLOR)
-        shape = population.shapes[candidate_ids[idx]]
-        cy = HEIGHT // 2 + 40
-        draw_shape_3d(screen, shape, CX_3D, cy)
-        draw_cross_section(screen, shape, CX_2D, cy-200)
-
-        #comparision
-        shape2 = population.shapes[candidate_ids[idx+1]]
-        draw_shape_3d(screen, shape2, CX_3D_2, cy)
-        draw_cross_section(screen, shape2, CX_2D_2, cy-200)
-
-        render_text(screen, font, f"Generation: {getattr(population, 'generation', '?')}", 20, 10)
-        render_text(screen, font, f"Candidate {idx+1}/{len(candidate_ids)}  VS  Candidate {idx+2}/{len(candidate_ids)}", 20, 35)
-        render_text(screen, font, f"Spin score: {shape.t_spin:.4f}", 20, 60)
-        rating = scores[candidate_ids[idx]]
-        #render_text(screen, font, f"Rating: {rating if rating is not None else '—'} (1-10)", 20, 85)
-        render_text(screen, font, "Rate Shapes | ←/→ which is better", 20, HEIGHT - 30)
-
-        pygame.display.flip()
-        clock.tick(FPS)
-
-    pygame.quit()
-    return scores
+        ranks: Dict[int, int] = {cid: r for r, cid in enumerate(q[0], 1)}
+        for cid, r in ranks.items():
+            s: Shape = pop.shapes[cid]
+            s.h_anchor = float(r); s.anchor_r = s.radii.copy(); s.update_guard()
+        return ranks
+    finally:
+        pygame.quit()
